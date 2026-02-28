@@ -14,6 +14,8 @@
 
 #include "xl9555.h"
 #include "codecs/no_audio_codec.h"
+#include "led_ws2812.h"
+#include "mcp_server.h"
 
 #define TAG "wmy_esp32s3"
 
@@ -25,6 +27,7 @@ class wmy_esp32s3 : public WifiBoard {
 private:
     Button boot_button_;
     LcdDisplay* display_;
+    NoAudioCodecSimplexPdm *audio_codec;
 
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
@@ -118,17 +121,8 @@ private:
                                     });
     }
 
-public:
-    wmy_esp32s3() : boot_button_(BOOT_BUTTON_GPIO) {
-        xl9555_init(GPIO_NUM_10, GPIO_NUM_11, GPIO_NUM_NC, NULL);
-        xl9555_ioconfig(~(IO0_0 | IO1_2 | IO1_3) & 0xFFFF);
-        st7789_i80_init();
-        InitializeButtons();
-        xl9555_pin_write(IO0_0 | IO0_2, 1);
-    }
-
-    virtual AudioCodec* GetAudioCodec() override {
-        static NoAudioCodecSimplexPdm audio_codec(
+    void InitializeAudioCodec() {
+        audio_codec = new NoAudioCodecSimplexPdm(
             AUDIO_INPUT_SAMPLE_RATE, 
             AUDIO_OUTPUT_SAMPLE_RATE,
             GPIO_NUM_46, 
@@ -136,7 +130,73 @@ public:
             GPIO_NUM_8, 
             GPIO_NUM_3, 
             GPIO_NUM_42);
-        return &audio_codec;
+    }
+
+    void led_init() {
+        // 初始化LED
+        static ws2812_strip_handle_t led_handle;
+        static int led_brightness = 0;
+        ws2812_init(GPIO_NUM_18, 3, &led_handle);
+
+        // 添加MCP工具
+        auto& mcp_server = McpServer::GetInstance();
+        mcp_server.AddTool("self.led.get_brightness", "获取led的亮度,范围是0-100", 
+            PropertyList(), 
+            [this](const PropertyList& properties) -> ReturnValue {
+            return led_brightness;
+        });
+
+        mcp_server.AddTool("self.led.set_brightness", "设置led的亮度,范围是0-100,如果没有检测到具体值，则需要向设备询问具体值", 
+            PropertyList({
+                Property("brightness", kPropertyTypeInteger, 0, 100)
+            }), 
+            [this](const PropertyList& properties) -> ReturnValue {
+                led_brightness = properties["brightness"].value<int>();
+
+                for(int i = 0; i < 3; i++) {
+                    ws2812_set_brightness(led_handle, i, led_brightness);
+                }
+                return true;
+            });
+
+         mcp_server.AddTool("self.led.set_color", "设置LED的颜色,颜色格式为rgb,范围是0-255", 
+            PropertyList({
+                Property("r", kPropertyTypeInteger, 0, 255),
+                Property("g", kPropertyTypeInteger, 0, 255),
+                Property("b", kPropertyTypeInteger, 0, 255)
+            }), 
+            [this](const PropertyList& properties) -> ReturnValue {
+                int r = properties["r"].value<int>();
+                int g = properties["g"].value<int>();
+                int b = properties["b"].value<int>();
+                for(int i = 0; i < 3; i++) {
+                    ws2812_write(led_handle, i, r, g, b);
+                }
+
+                return true;
+            });
+
+        mcp_server.AddTool("self.led.get_color", "获取LED的颜色,颜色格式为rgb,范围是0-255", 
+            PropertyList(), 
+            [this](const PropertyList& properties) -> ReturnValue {
+
+                return true;
+            });
+    }
+
+public:
+    wmy_esp32s3() : boot_button_(BOOT_BUTTON_GPIO) {
+        xl9555_init(GPIO_NUM_10, GPIO_NUM_11, GPIO_NUM_NC, NULL);
+        xl9555_ioconfig(~(IO0_0 | IO1_2 | IO1_3) & 0xFFFF);
+        st7789_i80_init();
+        InitializeButtons();
+        InitializeAudioCodec();
+        xl9555_pin_write(IO0_0 | IO0_2, 1);
+        led_init();
+    }
+
+    virtual AudioCodec* GetAudioCodec() override {
+        return audio_codec;
     }
 
     virtual Display* GetDisplay() override {
